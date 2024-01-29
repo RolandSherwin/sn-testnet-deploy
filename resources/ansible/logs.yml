@@ -12,14 +12,14 @@
 
     - name: copy all logs to temporary directory
       shell: |
-        for file in $(find /home/safe/.local/share/safe/node/ -name "safenode.log" -o -name "safenode.log*" -o -name "*.log"); do
+        for file in $(find /var/log/safenode/ -name "safenode.log" -o -name "safenode.log*" -o -name "*.log"); do
           cp $file {{ temp_dir.stdout }}
         done
       when: resources_only == "false"
 
     - name: copy all resource logs to temporary directory
       shell: |
-        for file in $(find /home/safe/.local/share/safe/node/ -name "resource-usage.log"); do
+        for file in $(find /var/log/safenode/ -name "resource-usage.log"); do
           cp $file {{ temp_dir.stdout }}
         done
       when: resources_only == "true"
