@@ -49,6 +49,11 @@ variable "node_count" {
   description = "The number of droplets to launch for the nodes"
 }
 
+variable "nat_detection_count" {
+  default = 3
+  description = "The number of droplets to launch for the nat detection servers"
+}
+
 variable "use_custom_bin" {
   type = bool
   default = false

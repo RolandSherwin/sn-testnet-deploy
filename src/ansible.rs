@@ -621,7 +621,7 @@ pub async fn generate_environment_inventory(
     output_inventory_dir_path: &Path,
 ) -> Result<()> {
     let mut generated_inventory_paths = vec![];
-    let inventory_files = ["build", "genesis", "node", "auditor"];
+    let inventory_files = ["build", "genesis", "node", "auditor", "nat-detection"];
     for inventory_type in inventory_files.iter() {
         let src_path = base_inventory_path;
         let dest_path = output_inventory_dir_path.join(format!(
