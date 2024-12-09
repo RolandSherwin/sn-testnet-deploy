@@ -26,6 +26,11 @@
         when: make_vm_private
       }
     - node
+    - {
+        role: cache_webserver,
+        become: True,
+        when: enable_cache_webserver
+      }
     - role: telegraf-configuration
       become: True
 
