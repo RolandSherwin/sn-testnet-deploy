@@ -307,7 +307,7 @@ impl AnsibleProvisioner {
                 None,
                 1,
                 options.evm_network.clone(),
-                true,
+                false,
             )?),
         )?;
 
@@ -403,7 +403,7 @@ impl AnsibleProvisioner {
                 initial_network_contacts_url,
                 node_count,
                 options.evm_network.clone(),
-                matches!(node_type, NodeType::Bootstrap),
+                false,
             )?),
         )?;
 
