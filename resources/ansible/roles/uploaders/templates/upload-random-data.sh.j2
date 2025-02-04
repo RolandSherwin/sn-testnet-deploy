@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+UPLOAD_METRIC_DIR="/mnt/ant-storage/logs/upload/${USER}/"
 
 if [[ -n "${SECRET_KEY}" ]] && ! grep -q "export SECRET_KEY=" ~/.profile; then
   echo "export SECRET_KEY=${SECRET_KEY}" >> ~/.profile
@@ -55,27 +56,61 @@ if ! command -v ant &> /dev/null; then
   exit 1
 fi
 
-write_metrics_on_success() {
-  local time=$1
-  local file_size_kb=$2
-  metrics_header
-  number_of_chunks=$(echo "$stdout" | rg -o 'Number of chunks uploaded: [0-9]+' | rg -o '[0-9]+')
-  store_cost=$(echo "$stdout" | rg -o 'Total cost: [0-9]+' | rg -o '[0-9]+' | head -n 1)
-
-  echo "$time,$file_size_kb,$number_of_chunks,$store_cost" >> "./uploader_metrics.csv"
-}
-
-write_metrics_on_failure() {
-  local time=$1
-  local file_size_kb=$2
-  metrics_header
-  echo "$time,$file_size_kb" >> "./uploader_metrics.csv"
-}
-
-metrics_header() {
-  if [ ! -f "./uploader_metrics.csv" ]; then
-    echo "Total Time(s),File Size (KB),Number of Chunks,Store Cost (AttoTokens)" > "./uploader_metrics.csv"
-  fi
+get_error_enum() {
+  local exit_code=$1
+  case $exit_code in
+    6)
+      echo "INVALID_INPUT"
+      ;;
+    11)
+      echo "SERIALIZATION_ERROR"
+      ;;
+    12)
+      echo "IO_ERROR"
+      ;;
+    13)
+      echo "NETWORK_ERROR"
+      ;;
+    14)
+      echo "PROTOCOL_ERROR"
+      ;;
+    15)
+      echo "SELF_ENCRYPTION_ERROR"
+      ;;
+    21)
+      echo "EVM_WALLET_NETWORK_MISMATCH"
+      ;;
+    22)
+      echo "EVM_WALLET_ERROR"
+      ;;
+    23)
+      echo "PAY_COST_ERROR"
+      ;;
+    31)
+      echo "INVALID_DATA_MAP"
+      ;;
+    32)
+      echo "DECRYPTION_ERROR"
+      ;;
+    41)
+      echo "PUT_COST_ERROR"
+      ;;
+    42)
+      echo "WALLET_ERROR"
+      ;;
+    43)
+      echo "SCRATCHPAD_BAD_OWNER"
+      ;;
+    44)
+      echo "PAYMENT_UNEXPECTEDLY_INVALID"
+      ;;
+    45)
+      echo "PAYEES_MISSING"
+      ;;
+    *)
+      echo "UNKNOWN_ERROR"
+      ;;
+  esac
 }
 
 generate_random_data_file_and_upload() {
@@ -85,30 +120,51 @@ generate_random_data_file_and_upload() {
   echo "Generated random data file at $tmpfile"
   file_size_kb=$(du -k "$tmpfile" | cut -f1)
 
-  now=$(date +"%s")
-  stdout=$(ant $CONTACT_PEER_ARG $NETWORK_CONTACTS_URL_ARG $TESTNET_ARG $NETWORK_ID_ARG file upload "$tmpfile" 2>&1)
-  echo "$stdout"
+  file_hash=$(sha256sum "$tmpfile" | awk '{ print $1 }')
+  echo "SHA-256 hash of the file: $file_hash"
 
-  if [ $? -eq 0 ]; then
-    echo "Successfully uploaded $tmpfile using SAFE CLI"
+  start_time=$(date +"%s")
+  stderr=$(ant $CONTACT_PEER_ARG $NETWORK_CONTACTS_URL_ARG $TESTNET_ARG $NETWORK_ID_ARG --json file upload "$tmpfile" 2>&1 1>/dev/null)
+  end_time=$(date +"%s")
+  json_output=$(echo "$stderr" | jq -r '.')
 
-    file_ref=$(echo "$stdout" | grep -oP 'At address: \K\S+')
-    if [ -z "$file_ref" ]; then
-      echo "Error: Unable to extract file reference."
-    else
-      echo "$file_ref" >> "./uploaded_files.log"
+  echo "$json_output"
+  records_paid=$(echo "$json_output" | jq -r '.task_summary.records_paid')
+  records_uploaded=$(echo "$json_output" | jq -r '.task_summary.records_uploaded')
+  records_upload_failed=$(echo "$json_output" | jq -r '.task_summary.records_upload_failed')
+  records_already_paid=$(echo "$json_output" | jq -r '.task_summary.records_already_paid')
+  tokens_spent=$(echo "$json_output" | jq -r '.task_summary.tokens_spent')
+
+  exit_code=$(echo "$json_output" | jq -r '.exit_code')
+  elapsed=$(($end_time - $start_time))
+
+  if [ "$exit_code" -eq 0 ]; then
+    uploaded_address=$(echo "$json_output" | jq -r '.uploaded_address')
+    echo "Successfully uploaded $tmpfile using SAFE CLI. Uploaded address: $uploaded_address"
+
+    success_file="$UPLOAD_METRIC_DIR/metrics_success.csv"
+    if [ ! -f "$success_file" ]; then
+      echo "Timestamp_Start,Timestamp_Finish,File_Address,Duration,Chunks_Uploaded,Chunk_Upload_Failed,Chunks_Already_Paid,Status,Service_Type,Ant_User,Store_Cost,File_Size,Sha256_Hash," > "$success_file"
     fi
 
-    elapsed=$(($(date +"%s") - $now))
-    write_metrics_on_success $elapsed $file_size_kb
+    echo "$start_time,$end_time,$uploaded_address,$elapsed,$records_uploaded,$records_upload_failed,$records_already_paid,SUCCESS,UPLOADER,$USER,$tokens_spent,$file_size_kb,$file_hash," >> "$success_file"
   else
     echo "Failed to upload $tmpfile using SAFE CLI"
-    elapsed=$(($(date +"%s") - $now))
-    write_metrics_on_failure $elapsed $file_size_kb
+
+    failure_file="$UPLOAD_METRIC_DIR/metrics_failure.csv"
+    error_enum=$(get_error_message $exit_code)
+    if [ ! -f "$failure_file" ]; then
+      echo "Timestamp_Start,Timestamp_Finish,Duration,Chunks_Uploaded,Chunk_Upload_Failed,Chunks_Already_Paid,Status,Error_Enum,Service_Type,Ant_User,Store_Cost,File_Size,Sha256_Hash," > "$failure_file"
+    fi
+    echo "$start_time,$end_time,$elapsed,$records_uploaded,$records_upload_failed,$records_already_paid,FAILURE,$error_enum,UPLOADER,$USER,$tokens_spent,$file_size_kb,$file_hash," >> "$failure_file"
   fi
 
   rm "$tmpfile"
 }
+
+if [ ! -d "$UPLOAD_METRIC_DIR" ]; then
+  mkdir -p "$UPLOAD_METRIC_DIR"
+fi
 
 while true; do
   echo "================================"
