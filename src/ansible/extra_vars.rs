@@ -12,6 +12,7 @@ use alloy::hex::ToHexExt;
 use alloy::signers::local::PrivateKeySigner;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 const ANT_S3_BUCKET_URL: &str = "https://autonomi-cli.s3.eu-west-2.amazonaws.com";
 const ANTCTL_S3_BUCKET_URL: &str = "https://antctl.s3.eu-west-2.amazonaws.com";
@@ -372,10 +373,10 @@ pub fn build_uploaders_extra_vars_doc(
         extra_vars.add_variable("network_contacts_url", &network_contacts_url);
     }
 
-    extra_vars.add_variable(
-        "safe_downloader_instances",
-        &options.downloaders_count.to_string(),
-    );
+    if options.enable_downloaders {
+        extra_vars.add_variable("enable_downloaders", "true");
+    }
+
     extra_vars.add_ant_url_or_version(
         &options.name,
         &options.binary_option,
@@ -411,6 +412,46 @@ pub fn build_uploaders_extra_vars_doc(
     let serde_map = Value::Object(serde_map);
 
     extra_vars.add_serde_value("ant_secret_key_map", serde_map);
+
+    Ok(extra_vars.build())
+}
+
+pub fn build_downloaders_extra_vars_doc(
+    cloud_provider: &str,
+    options: &ProvisionOptions,
+    genesis_multiaddr: Option<String>,
+    genesis_network_contacts_url: Option<String>,
+    first_uploader_ip: IpAddr,
+) -> Result<String> {
+    let mut extra_vars: ExtraVarsDocBuilder = ExtraVarsDocBuilder::default();
+    extra_vars.add_variable("provider", cloud_provider);
+    extra_vars.add_variable("testnet_name", &options.name);
+    if let Some(genesis_multiaddr) = genesis_multiaddr {
+        extra_vars.add_variable("genesis_multiaddr", &genesis_multiaddr);
+    }
+    if let Some(network_contacts_url) = genesis_network_contacts_url {
+        extra_vars.add_variable("network_contacts_url", &network_contacts_url);
+    }
+
+    if options.enable_downloaders {
+        extra_vars.add_variable("enable_downloaders", "true");
+    }
+
+    extra_vars.add_variable("evm_network_type", &options.evm_network.to_string());
+    if let Some(evm_data_payment_token_address) = &options.evm_data_payments_address {
+        extra_vars.add_variable("evm_data_payments_address", evm_data_payment_token_address);
+    }
+    if let Some(evm_payment_token_address) = &options.evm_payment_token_address {
+        extra_vars.add_variable("evm_payment_token_address", evm_payment_token_address);
+    }
+    if let Some(evm_rpc_url) = &options.evm_rpc_url {
+        extra_vars.add_variable("evm_rpc_url", evm_rpc_url);
+    }
+    if let Some(network_id) = options.network_id {
+        extra_vars.add_variable("network_id", &network_id.to_string());
+    }
+
+    extra_vars.add_variable("first_uploader_ip", &first_uploader_ip.to_string());
 
     Ok(extra_vars.build())
 }

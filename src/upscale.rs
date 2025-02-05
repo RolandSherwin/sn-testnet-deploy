@@ -145,7 +145,7 @@ impl TestnetDeployer {
         let mut provision_options = ProvisionOptions {
             binary_option: options.current_inventory.binary_option.clone(),
             chunk_size: None,
-            downloaders_count: 0,
+            enable_downloaders: false,
             env_variables: None,
             evm_network: options
                 .current_inventory
@@ -399,7 +399,7 @@ impl TestnetDeployer {
         let provision_options = ProvisionOptions {
             binary_option: options.current_inventory.binary_option.clone(),
             chunk_size: None,
-            downloaders_count: 0,
+            enable_downloaders: false,
             env_variables: None,
             evm_data_payments_address: options
                 .current_inventory

@@ -42,7 +42,7 @@ pub struct ProvisionOptions {
     pub ant_version: Option<String>,
     pub binary_option: BinaryOption,
     pub chunk_size: Option<u64>,
-    pub downloaders_count: u16,
+    pub enable_downloaders: bool,
     pub env_variables: Option<Vec<(String, String)>>,
     pub evm_data_payments_address: Option<String>,
     pub evm_network: EvmNetwork,
@@ -74,7 +74,7 @@ impl From<BootstrapOptions> for ProvisionOptions {
         ProvisionOptions {
             binary_option: bootstrap_options.binary_option,
             chunk_size: bootstrap_options.chunk_size,
-            downloaders_count: 0,
+            enable_downloaders: false,
             env_variables: bootstrap_options.env_variables,
             evm_data_payments_address: bootstrap_options.evm_data_payments_address,
             evm_network: bootstrap_options.evm_network,
@@ -108,7 +108,7 @@ impl From<DeployOptions> for ProvisionOptions {
         ProvisionOptions {
             binary_option: deploy_options.binary_option,
             chunk_size: deploy_options.chunk_size,
-            downloaders_count: deploy_options.downloaders_count,
+            enable_downloaders: deploy_options.enable_downloaders,
             env_variables: deploy_options.env_variables,
             evm_data_payments_address: deploy_options.evm_data_payments_address,
             evm_network: deploy_options.evm_network,
@@ -539,6 +539,56 @@ impl AnsibleProvisioner {
                 genesis_multiaddr,
                 genesis_network_contacts_url,
                 &sk_map,
+            )?),
+        )?;
+        print_duration(start.elapsed());
+        Ok(())
+    }
+
+    pub async fn provision_downloaders(
+        &self,
+        options: &ProvisionOptions,
+        genesis_multiaddr: Option<String>,
+        genesis_network_contacts_url: Option<String>,
+    ) -> Result<()> {
+        let start = Instant::now();
+
+        println!("Running ansible against uploader machine to start the downloader script.");
+        debug!("Running ansible against uploader machine to start the downloader script.");
+
+        let uploader_vms = self
+            .ansible_runner
+            .get_inventory(AnsibleInventoryType::Uploaders, true)
+            .map_err(|err| {
+                println!("Failed to get NAT Gateway inventory {err:?}");
+                err
+            })?;
+
+        let first_uploader_ip = uploader_vms.iter().find_map(|vm| {
+            if vm.name.contains("uploader-1") {
+                Some(vm.public_ip_addr)
+            } else {
+                None
+            }
+        });
+
+        let Some(first_uploader_ip) = first_uploader_ip else {
+            println!(
+                "Failed to find the first uploader IP address, skipping setting up downloaders"
+            );
+            debug!("Failed to find the first uploader IP address, skipping setting up downloaders");
+            return Ok(());
+        };
+
+        self.ansible_runner.run_playbook(
+            AnsiblePlaybook::Downloaders,
+            AnsibleInventoryType::Uploaders,
+            Some(extra_vars::build_downloaders_extra_vars_doc(
+                &self.cloud_provider.to_string(),
+                options,
+                genesis_multiaddr,
+                genesis_network_contacts_url,
+                first_uploader_ip,
             )?),
         )?;
         print_duration(start.elapsed());

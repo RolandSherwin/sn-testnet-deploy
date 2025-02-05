@@ -335,13 +335,12 @@ enum Commands {
         /// This option only applies if the --branch and --repo-owner arguments are used.
         #[clap(long, value_parser = parse_chunk_size)]
         chunk_size: Option<u64>,
-        /// If set to a non-zero value, the uploaders will also be accompanied by the specified
-        /// number of downloaders.
+        /// If set to true, the uploaders will also be accompanied by a set of 3 downloaders that will perform
+        /// various performance and data retrieval tests.
         ///
-        /// This will be the number on each uploader VM. So if the value here is 2 and there are
-        /// 5 uploader VMs, there will be 10 downloaders across the 5 VMs.
-        #[clap(long, default_value_t = 0)]
-        downloaders_count: u16,
+        /// The downloaders are enabled on the first uploader VM.
+        #[clap(long)]
+        enable_downloaders: bool,
         /// Provide environment variables for the antnode service.
         ///
         /// This is useful to set the antnode's log levels. Each variable should be comma
@@ -1590,7 +1589,7 @@ async fn main() -> Result<()> {
             antnode_version,
             branch,
             chunk_size,
-            downloaders_count,
+            enable_downloaders,
             env_variables,
             environment_type,
             evm_data_payments_address,
@@ -1723,7 +1722,7 @@ async fn main() -> Result<()> {
                     binary_option: binary_option.clone(),
                     chunk_size,
                     current_inventory: inventory,
-                    downloaders_count,
+                    enable_downloaders,
                     env_variables,
                     environment_type: environment_type.clone(),
                     evm_data_payments_address,

@@ -21,7 +21,7 @@ pub struct DeployOptions {
     pub binary_option: BinaryOption,
     pub chunk_size: Option<u64>,
     pub current_inventory: DeploymentInventory,
-    pub downloaders_count: u16,
+    pub enable_downloaders: bool,
     pub environment_type: EnvironmentType,
     pub env_variables: Option<Vec<(String, String)>>,
     pub evm_data_payments_address: Option<String>,
@@ -289,6 +289,20 @@ impl TestnetDeployer {
                 .print_ansible_run_banner("Provision Uploaders");
             self.ansible_provisioner
                 .provision_uploaders(
+                    &provision_options,
+                    Some(genesis_multiaddr.clone()),
+                    Some(genesis_network_contacts.clone()),
+                )
+                .await
+                .map_err(|err| {
+                    println!("Failed to provision uploaders {err:?}");
+                    err
+                })?;
+
+            self.ansible_provisioner
+                .print_ansible_run_banner("Provision Downloaders");
+            self.ansible_provisioner
+                .provision_downloaders(
                     &provision_options,
                     Some(genesis_multiaddr.clone()),
                     Some(genesis_network_contacts.clone()),

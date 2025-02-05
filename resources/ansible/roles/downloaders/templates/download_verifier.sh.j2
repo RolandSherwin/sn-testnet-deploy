@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+SUCCESSFUL_UPLOAD_METRIC_FILE="/mnt/ant-storage/logs/upload_files/${USER}/metrics_success.csv"
+DOWNLOAD_VERIFIER_DIR="/mnt/ant-storage/logs/download_verifier/${USER}"
+DOWNLOAD_DIR="/mnt/ant-storage/data/downloaded_files/"
+SLEEP_INTERVAL=5
+
+CONTACT_PEER_ARG=""
+NETWORK_CONTACTS_URL_ARG=""
+NETWORK_ID_ARG=""
+TESTNET_ARG=""
+
+CONTACT_PEER="${1:-}"
+NETWORK_CONTACTS_URL="${2:-}"
+NETWORK_ID="${3:-}"
+
+{% if not testnet_name.startswith('PROD-') %}
+CONTACT_PEER_ARG=""
+if [ -n "$CONTACT_PEER" ]; then
+  CONTACT_PEER_ARG="--peer $CONTACT_PEER"
+fi
+NETWORK_CONTACTS_URL_ARG=""
+if [ -n "$NETWORK_CONTACTS_URL" ]; then
+  NETWORK_CONTACTS_URL_ARG="--network-contacts-url $NETWORK_CONTACTS_URL"
+fi
+if [ -z "$CONTACT_PEER" ] && [ -z "$NETWORK_CONTACTS_URL" ]; then
+  echo "No contact peer or network contacts URL provided. Please provide the initial contact peer or network contacts URL."
+  exit 1
+fi
+TESTNET_ARG="--testnet"
+{% else %}
+CONTACT_PEER_ARG=""
+NETWORK_CONTACTS_URL_ARG=""
+TESTNET_ARG=""
+{% endif %}
+
+NETWORK_ID_ARG=""
+if [ -n "$NETWORK_ID" ]; then
+  echo "Setting network ID arg to $NETWORK_ID"
+  NETWORK_ID_ARG="--network-id $NETWORK_ID"
+fi
+
+
+if [ ! -d "$DOWNLOAD_VERIFIER_DIR" ]; then
+  mkdir -p "$DOWNLOAD_VERIFIER_DIR"
+fi
+
+get_error_enum() {
+  local exit_code=$1
+  case $exit_code in
+    6)
+      echo "INVALID_INPUT"
+      ;;
+    11)
+      echo "SERIALIZATION_ERROR"
+      ;;
+    12)
+      echo "IO_ERROR"
+      ;;
+    13)
+      echo "NETWORK_ERROR"
+      ;;
+    14)
+      echo "PROTOCOL_ERROR"
+      ;;
+    15)
+      echo "SELF_ENCRYPTION_ERROR"
+      ;;
+    21)
+      echo "EVM_WALLET_NETWORK_MISMATCH"
+      ;;
+    22)
+      echo "EVM_WALLET_ERROR"
+      ;;
+    23)
+      echo "PAY_COST_ERROR"
+      ;;
+    31)
+      echo "INVALID_DATA_MAP"
+      ;;
+    32)
+      echo "DECRYPTION_ERROR"
+      ;;
+    41)
+      echo "PUT_COST_ERROR"
+      ;;
+    42)
+      echo "WALLET_ERROR"
+      ;;
+    43)
+      echo "SCRATCHPAD_BAD_OWNER"
+      ;;
+    44)
+      echo "PAYMENT_UNEXPECTEDLY_INVALID"
+      ;;
+    45)
+      echo "PAYEES_MISSING"
+      ;;
+    *)
+      echo "UNKNOWN_ERROR"
+      ;;
+  esac
+}
+
+download_file() {
+  local file_ref=$1
+  # Multiple downloaders can be running on the same machine, so one or more
+  # could select the same file address at the same time. We therefore use a GUID
+  # to ensure a unique output file.
+  local output_path="$(uuidgen).dat"
+  (
+    local uploaded_address=$(echo $file_ref | cut -d, -f3)
+    local sha256_hash=$(echo $file_ref | cut -d, -f13)
+
+
+    cd "$DOWNLOAD_DIR"
+    echo "Downloading file: $uploaded_address with hash $sha256_hash" 
+    start_time=$(date +"%s")
+    stderr=$(ant $CONTACT_PEER_ARG $NETWORK_CONTACTS_URL_ARG $TESTNET_ARG $NETWORK_ID_ARG --json file download --read-quorum majority "$output_path" "$uploaded_address" 2>&1 1>/dev/null)
+    end_time=$(date +"%s")
+    json_output=$(echo "$stderr" | jq -r '.')
+    echo "$json_output"
+
+    exit_code=$(echo "$json_output" | jq -r '.exit_code')
+    downloaded_sha256_hash=$(sha256sum "$output_path" | awk '{ print $1 }')
+    elapsed=$(($end_time - $start_time))
+    records_downloaded=$(echo "$json_output" | jq -r '.task_summary.records_downloaded')
+
+    if [[ "$sha256_hash" != "$downloaded_sha256_hash" ]]; then
+      local hash_mismatch="true"
+    fi
+
+    if [[ "$exit_code" == "0" && -z "$hash_mismatch" ]]; then
+      echo "Downloaded $file_ref to $output_path with has $downloaded_sha256_hash"
+      rm "$output_path"
+      success_file="$DOWNLOAD_VERIFIER_DIR/metrics_success.csv"
+     
+     if [ ! -f "$success_file" ]; then
+        echo "Timestamp_Start,Timestamp_Finish,File_Address,Duration,Downloaded_Chunks,Status,Service_Type,Ant_User,Sha256_Hash" > "$success_file"
+      fi
+      echo "$start_time,$end_time,$uploaded_address,$elapsed,$records_downloaded,SUCCESS,DOWNLOAD_VERIFIER,$USER,$sha256_hash" >> "$success_file"
+    else
+      echo "Failed to download $file_ref"
+
+      failure_file="$DOWNLOAD_VERIFIER_DIR/metrics_failure.csv"
+      if [[ -n "$hash_mismatch" ]]; then
+        error_enum="HASH_MISMATCH"
+      else
+        error_enum=$(get_error_enum $exit_code)
+      fi
+
+      if [ ! -f "$failure_file" ]; then
+        echo "Timestamp_Start,Timestamp_Finish,File_Address,Duration,Downloaded_Chunks,Status,Error_Enum,Service_Type,Ant_User,Sha256_Hash" > "$success_file"
+      fi
+
+      echo "$start_time,$end_time,$uploaded_address,$elapsed,$records_downloaded,FAILURE,$error_enum,DOWNLOAD_VERIFIER,$USER,$sha256_hash" >> "$failure_file"
+    fi
+  )
+}
+
+while true; do
+  if [[ -f "$SUCCESSFUL_UPLOAD_METRIC_FILE" && -s "$SUCCESSFUL_UPLOAD_METRIC_FILE" ]]; then
+    file_ref=$(tail -n 10 "$SUCCESSFUL_UPLOAD_METRIC_FILE" | head -n 1)
+    if [[ -n "$file_ref" ]]; then
+      download_file "$file_ref"
+      sleep "$SLEEP_INTERVAL"
+    else
+      echo "Selected line is empty. Retrying..."
+    fi
+  else
+    echo "Upload metric file '$SUCCESSFUL_UPLOAD_METRIC_FILE' does not exist or is empty. Retrying in '$SLEEP_INTERVAL' seconds..."
+    sleep "$SLEEP_INTERVAL"
+  fi
+done

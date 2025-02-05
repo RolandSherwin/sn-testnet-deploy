@@ -1,13 +1,12 @@
 ---
-- name: configure uploaders
-  hosts: all
+- name: configure downloaders
+  hosts: "{{ first_uploader_ip }}"
   become: False
   ignore_unreachable: yes
   roles:
-    - role: uploader-metrics
+    - role: downloaders
       become: True
-    - role: uploaders
-      become: True
+      when: enable_downloaders | bool
 
   tasks:
     # Something is wrong with the journal service on Ubuntu that causes no
