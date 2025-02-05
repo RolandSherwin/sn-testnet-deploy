@@ -288,7 +288,7 @@ impl AnsibleProvisioner {
             AnsiblePlaybook::EvmNodes,
             AnsibleInventoryType::EvmNodes,
             Some(extra_vars::build_evm_nodes_extra_vars_doc(
-                &options.name,
+                options,
                 &self.cloud_provider,
             )),
         )?;

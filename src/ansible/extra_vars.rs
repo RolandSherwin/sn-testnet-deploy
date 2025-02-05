@@ -494,9 +494,13 @@ pub fn build_uploader_telegraf_upgrade(name: &str) -> Result<String> {
     Ok(extra_vars.build())
 }
 
-pub fn build_evm_nodes_extra_vars_doc(name: &str, cloud_provider: &CloudProvider) -> String {
+pub fn build_evm_nodes_extra_vars_doc(
+    options: &ProvisionOptions,
+    cloud_provider: &CloudProvider,
+) -> String {
     let mut extra_vars = ExtraVarsDocBuilder::default();
-    extra_vars.add_variable("testnet_name", name);
+    extra_vars.add_build_variables(&options.name, &options.binary_option);
+    extra_vars.add_variable("testnet_name", &options.name);
     extra_vars.add_variable("provider", &cloud_provider.to_string());
     extra_vars.build()
 }
