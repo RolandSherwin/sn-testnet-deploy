@@ -35,11 +35,17 @@ impl TestnetDeployer {
         } else {
             all_node_inventory
         };
-
+    
         let log_abs_dest = create_initial_log_dir_setup(&root_dir, name, &all_node_inventory)?;
-
-        // Rsync args
-        let rsync_args = vec![
+    
+        // Get routing information for private nodes
+        let routed_vm_read = self.ssh_client.routed_vms.read().map_err(|err| {
+            log::error!("Failed to read routed VMs: {err}");
+            Error::SshSettingsRwLockError
+        })?;
+    
+        // Rsync base args
+        let rsync_base_args = vec![
             "--compress".to_string(),
             "--archive".to_string(),
             "--prune-empty-dirs".to_string(),
@@ -49,69 +55,75 @@ impl TestnetDeployer {
             "--filter=+ *.log*".to_string(), // Include all *.log* files
             "--filter=- *".to_string(),  // Exclude all other files
         ];
-
-        let mut public_rsync_args = rsync_args.clone();
-        // Add the ssh details
-        // TODO: SSH limits the connections/instances to 10 at a time. Changing /etc/ssh/sshd_config, doesn't work?
-        // How to bypass this?
-        public_rsync_args.extend(vec![
-            "-e".to_string(),
-            format!(
-                "ssh -i {} -q -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30",
-                self.ssh_client
-                    .get_private_key_path()
-                    .to_string_lossy()
-                    .as_ref()
-            ),
-        ]);
-
-        // let symmetric_nat_gateway_inventory = self.get_symmetric_nat_gateway_inventory(name)?;
-        // let private_rsync_args = if !nat_gateway_inventory.is_empty() {
-        //     let nat_gateway_inventory = nat_gateway_inventory.first().unwrap();
-        //     let mut private_rsync_args = rsync_args.clone();
-        //     private_rsync_args.extend(vec![
-        //         "-e".to_string(),
-        //         format!(
-        //             "ssh -i {} -q -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -o ProxyCommand='ssh root@{} -W %h:%p -i {}'",
-        //             self.ssh_client
-        //                 .get_private_key_path()
-        //                 .to_string_lossy()
-        //                 .as_ref(),
-        //                 nat_gateway_inventory.public_ip_addr,
-        //             self.ssh_client
-        //                 .get_private_key_path()
-        //                 .to_string_lossy()
-        //                 .as_ref(),
-        //         ),
-        //     ]);
-        //     Some(private_rsync_args)
-        // } else {
-        //     None
-        // };
-
+    
+        // Base SSH args with private key
+        let ssh_base_cmd = format!(
+            "ssh -i {} -q -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30",
+            self.ssh_client
+                .get_private_key_path()
+                .to_string_lossy()
+                .as_ref()
+        );
+    
         // We might use the script, so goto the resource dir.
         std::env::set_current_dir(self.working_directory_path.clone())?;
         println!("Starting to rsync the log files");
         let progress_bar = get_progress_bar(all_node_inventory.len() as u64)?;
-
+    
         let failed_inventory = all_node_inventory.par_iter().filter_map(|vm| {
-            let args = if vm.name.contains("private") {
-                // if let Some(private_rsync_args) = &private_rsync_args {
-                //     debug!("Using private rsync args for {:?}", vm.name);
-                //     private_rsync_args
-                // } else {
-                debug!(
-                    "Fallback to public rsync args for private node {:?}",
-                    vm.name
-                );
-                &public_rsync_args
-                // }
+            let rsync_args = if let Some(routed_vms) = routed_vm_read.as_ref() {
+                // Check if it's a symmetric NAT routed node
+                if let Some((_, gateway_ip)) = routed_vms.find_symmetric_nat_routed_node(&vm.public_ip_addr) {
+                    debug!(
+                        "Using symmetric NAT routing for {:?} through gateway {}",
+                        vm.name, gateway_ip
+                    );
+                    
+                    // For symmetric NAT routing, we need to use a ProxyCommand through the gateway
+                    let mut args = rsync_base_args.clone();
+                    args.extend(vec![
+                        "-e".to_string(),
+                        format!(
+                            "{} -o ProxyCommand=\"{} root@{} -W %h:%p\"",
+                            ssh_base_cmd, ssh_base_cmd, gateway_ip
+                        ),
+                    ]);
+                    args
+                } 
+                // Check if it's a full cone NAT routed node
+                else if let Some((_, gateway_ip)) = routed_vms.find_full_cone_nat_routed_node(&vm.public_ip_addr) {
+                    debug!(
+                        "Using full cone NAT routing for {:?} through gateway {}",
+                        vm.name, gateway_ip
+                    );
+                    
+                    // For full cone NAT routing, we connect to the gateway directly
+                    let mut args = rsync_base_args.clone();
+                    args.extend(vec![
+                        "-e".to_string(),
+                        ssh_base_cmd.clone(),
+                    ]);
+                    args
+                } else {
+                    // Standard public node
+                    let mut args = rsync_base_args.clone();
+                    args.extend(vec![
+                        "-e".to_string(),
+                        ssh_base_cmd.clone(),
+                    ]);
+                    args
+                }
             } else {
-                debug!("Using public rsync args for {:?}", vm.name);
-                &public_rsync_args
+                // No routing information, use default
+                let mut args = rsync_base_args.clone();
+                args.extend(vec![
+                    "-e".to_string(),
+                    ssh_base_cmd.clone(),
+                ]);
+                args
             };
-
-            if let Err(err) = Self::run_rsync(&vm.name, &vm.public_ip_addr, &log_abs_dest, args) {
+    
+            if let Err(err) = Self::run_rsync(&vm.name, &vm.public_ip_addr, &log_abs_dest, &rsync_args) {
                 println!(
                     "Failed to rsync. Retrying it after ssh-keygen {:?} : {} with err: {err:?}",
                     vm.name, vm.public_ip_addr
@@ -121,7 +133,7 @@ impl TestnetDeployer {
             progress_bar.inc(1);
             None
         });
-
+    
         // try ssh-keygen for the failed inventory and try to rsync again
         failed_inventory
             .into_par_iter()
@@ -135,10 +147,51 @@ impl TestnetDeployer {
                     false,
                 ) {
                     println!("Failed to ssh-keygen {:?} : {} with err: {err:?}", vm.name, vm.public_ip_addr);
-                } else if let Err(err) =
-                    Self::run_rsync(&vm.name, &vm.public_ip_addr, &log_abs_dest, &rsync_args)
-                {
-                    println!("Failed to rsync even after ssh-keygen. Could not obtain logs for {:?} : {} with err: {err:?}", vm.name, vm.public_ip_addr);
+                } else {
+                    // Recreate the rsync args for this specific VM
+                    let rsync_args = if let Some(routed_vms) = routed_vm_read.as_ref() {
+                        // Check if it's a symmetric NAT routed node
+                        if let Some((_, gateway_ip)) = routed_vms.find_symmetric_nat_routed_node(&vm.public_ip_addr) {
+                            let mut args = rsync_base_args.clone();
+                            args.extend(vec![
+                                "-e".to_string(),
+                                format!(
+                                    "{} -o ProxyCommand=\"{} root@{} -W %h:%p\"",
+                                    ssh_base_cmd, ssh_base_cmd, gateway_ip
+                                ),
+                            ]);
+                            args
+                        } 
+                        // Check if it's a full cone NAT routed node
+                        else if let Some((_, _)) = routed_vms.find_full_cone_nat_routed_node(&vm.public_ip_addr) {
+                            let mut args = rsync_base_args.clone();
+                            args.extend(vec![
+                                "-e".to_string(),
+                                ssh_base_cmd.clone(),
+                            ]);
+                            args
+                        } else {
+                            // Standard public node
+                            let mut args = rsync_base_args.clone();
+                            args.extend(vec![
+                                "-e".to_string(),
+                                ssh_base_cmd.clone(),
+                            ]);
+                            args
+                        }
+                    } else {
+                        // No routing information, use default
+                        let mut args = rsync_base_args.clone();
+                        args.extend(vec![
+                            "-e".to_string(),
+                            ssh_base_cmd.clone(),
+                        ]);
+                        args
+                    };
+    
+                    if let Err(err) = Self::run_rsync(&vm.name, &vm.public_ip_addr, &log_abs_dest, &rsync_args) {
+                        println!("Failed to rsync even after ssh-keygen. Could not obtain logs for {:?} : {} with err: {err:?}", vm.name, vm.public_ip_addr);
+                    }
                 }
                 progress_bar.inc(1);
             });
@@ -146,7 +199,7 @@ impl TestnetDeployer {
         println!("Rsync completed!");
         Ok(())
     }
-
+    
     fn run_rsync(
         vm_name: &String,
         ip_address: &IpAddr,
@@ -155,10 +208,13 @@ impl TestnetDeployer {
     ) -> Result<()> {
         let vm_path = log_abs_dest.join(vm_name);
         let mut rsync_args_clone = rsync_args.to_vec();
-
+    
+        // For symmetric NAT nodes, we need to use the private IP in the rsync command
+        // For full cone NAT nodes, we use the gateway's IP
+        // The routing is handled in the SSH args (-e parameter)
         rsync_args_clone.push(format!("root@{ip_address}:/mnt/antnode-storage/log/"));
         rsync_args_clone.push(vm_path.to_string_lossy().to_string());
-
+    
         debug!("Rsync logs to our machine for {vm_name:?} : {ip_address}");
         run_external_command(
             PathBuf::from("rsync"),
@@ -167,10 +223,12 @@ impl TestnetDeployer {
             true,
             false,
         )?;
-
+    
         debug!("Finished rsync for for {vm_name:?} : {ip_address}");
         Ok(())
     }
+
+   
 
     pub fn ripgrep_logs(&self, name: &str, rg_args: &str) -> Result<()> {
         // take root_dir at the top as `get_all_node_inventory` changes the working dir.
