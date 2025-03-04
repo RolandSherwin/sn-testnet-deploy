@@ -483,6 +483,7 @@ impl AnsibleProvisioner {
                 1,
                 options.evm_network.clone(),
                 false,
+                false,
             )?),
         )?;
 
@@ -761,6 +762,7 @@ impl AnsibleProvisioner {
     ) -> Result<()> {
         let start = Instant::now();
         let mut relay = false;
+        let mut write_older_cache_files = false;
         let (inventory_type, node_count) = match &node_type {
             NodeType::FullConePrivateNode => {
                 relay = true;
@@ -772,10 +774,13 @@ impl AnsibleProvisioner {
             // use provision_genesis_node fn
             NodeType::Generic => (node_type.to_ansible_inventory_type(), options.node_count),
             NodeType::Genesis => return Err(Error::InvalidNodeType(node_type)),
-            NodeType::PeerCache => (
-                node_type.to_ansible_inventory_type(),
-                options.peer_cache_node_count,
-            ),
+            NodeType::PeerCache => {
+                write_older_cache_files = true;
+                (
+                    node_type.to_ansible_inventory_type(),
+                    options.peer_cache_node_count,
+                )
+            }
             NodeType::SymmetricPrivateNode => {
                 relay = true;
                 (
@@ -826,6 +831,7 @@ impl AnsibleProvisioner {
                 node_count,
                 options.evm_network.clone(),
                 relay,
+                write_older_cache_files,
             )?),
         )?;
 
