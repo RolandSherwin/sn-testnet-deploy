@@ -575,7 +575,7 @@ impl AnsibleProvisioner {
                 1,
                 options.evm_network.clone(),
                 false,
-                false,
+                true,
             )?),
         )?;
 
